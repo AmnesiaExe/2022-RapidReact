@@ -1,182 +1,178 @@
-#include "Vision.h" // required before other #includes
-#include "UDP_TransferNT.h"
+#include "Vision.h"
 
-using namespace UDP_TransferNT;
-
-/**
- * Container for images passed between layers
- */
 struct Images {
-	CJ::Image origin;
-	CJ::Image filtered;
-	CJ::Image processed;
-
-	CJ::BoundingPoints object_loc;
+  CJ::Image originImage;
+  CJ::Image filterImage;
+  CJ::Image contourImage;
+  CJ::Image boundingImage;
 };
 
-/**
- * Camera Capture Layer
- */
-class CaptureLayer : public CJ::Layer {
+class Capture : public CJ::Layer {
  public:
-	CaptureLayer(CJ::Application &app, CJ::Image &origin) : Layer("Capture Layer"), _app(app), _origin(origin) {
-		CJ_PRINT_INFO("Capture Layer Created");
-	}
+  Capture(CJ::Application &app, Images &images) : Layer("Camera Layer"), _app(app), _images(images) {
+   CJ_PRINT_INFO("Example Layer created");
+  }
 
-	void onAttach() override {
-		CJ_PRINT_INFO("Capture Layer Attached");
-		_camera.config.port = 0;
-		_camera.config.fps = 60;
-		_camera.config.autoExposure = true;
+  void onAttach() override {
+    _images.originImage.name = "Input Image"; // Set name for image. (used mainly for debugging)
+    _cam.config.port = 0;
+    _cam.config.name = "Input Camera"; //Sets the name for camera
 
-		_camera.config.name = "Cam";
-		_origin.name = "Origin Image";
+    if (_cam.init() !=0) { // Initialize the camera. And stop the program if it fails.
+      _app.setRunning(false);
+    }
+    CJ_PRINT_INFO("Camera Created");
+  }
 
-		if (_camera.init() != 0) {
-			CJ_PRINT_ERROR("Could not init camera");
-			_app.setRunning(false);
-		}
-	}
+  void onDetach() {
+    CJ_PRINT_WARN("Example Layer Detached");
+  }
 
-	void onDetach() override {
-		CJ_PRINT_WARN("Capture Layer Detached");
-	}
-
-	void onUpdate() override {
-		_camera.capture(_origin);
-	}
-
- private:
-	CJ::Application &_app;
-	CJ::Camera _camera; // main camera
-	CJ::Image &_origin; // reference to origin passed into layer
+  void onUpdate() {
+    _cam.capture(_images.originImage);
+  }
+private:
+  CJ::Application &_app;
+  Images &_images;
+  CJ::Camera _cam; // Camera instance
 };
 
+struct HSV_Options {
+  int HL = 21,
+  HH = 104,
+  SL = 181,
+  SH = 255,
+  VL = 176,
+  VH = 255;
 
-class ProcessingLayer : public CJ::Layer {
+  int erosionSize = 0;
+  int dilationSize = 0;
+  int blur = 0;
+  int binaryThreshold_Low = 0;
+  int bindyThreshold_High = 0;
+
+};
+
+class FilterLayer : public CJ::Layer {
+  public:
+  FilterLayer(CJ::Application &app, Images &images) : Layer("Filter Layer"), _app(app), _images(images) {
+    CJ_PRINT_INFO("Filter Layer Created");
+  }
+  void onAttach() override {
+    CJ_PRINT_INFO("Filter Layer Attached");
+    _images.filterImage.name = "Filtered Image";
+
+    options.HL = 21; // hue low
+    options.HH = 104; //hue highfilter
+    
+    options.SL = 181; // sat low
+    options.SH = 255; // sat high
+
+    options.VL = 176; // value low
+    options.VH = 255; // value high
+
+    options.erosionSize = 0;
+    options.dilationSize = 2;
+
+    CJ::ColourFilter::createFilterTrackbar(options); 
+  }
+  void onDetach() override {
+    CJ_PRINT_WARN("Filter Layer Detached");
+  }
+  void onUpdate() override {
+    CJ::ColourFilter::filter(_images.originImage, _images.filterImage, options); 
+  }
+  private:
+  CJ::Application &_app;
+  Images &_images;
+
+  CJ::ColourFilter::HSV_Options options;
+};
+
+class ContoursLayer : public CJ::Layer {
  public:
-	ProcessingLayer(CJ::Application &app, Images &images) : Layer("Processing Layer"), _app(app), _images(images) {
-		CJ_PRINT_INFO("Processing Layer Created");
-	}
+  ContoursLayer(CJ::Application &app, Images &images) : Layer("Contours Layer"), _app(app), _images(images) {
+   CJ_PRINT_INFO("Contours Layer Created"); 
+  }
 
-	void onAttach() override {
-		CJ_PRINT_INFO("Processing Layer Attached");
-		_images.filtered.name = "Filtered Images";
-		_hsv_options = { // green track for low exposure logitech 1080p webcam
-			25, // H
-			45,
+  void onAttach() override {
+    CJ_PRINT_INFO("Contours Layer Attached");
+    _images.contourImage.name = "Contour Image";
+  }
 
-			113, // S
-			214,
+  void onDetach() override {
+    CJ_PRINT_WARN("Contours Layer Detached");
+  }
 
-			104, // V
-			168,
+  void onUpdate() override {
+    CJ::Contours::detectContours(_images.filterImage, _images.contourImage); 
+  }
 
-			2, // Erosion
-			2 // Dilation
-		};
-
-		_images.filtered.name = "Filtered";
-		_images.processed.name = "Processed Image";
-
-
-		// Create filter trackbar to edit hsv_options
-		CJ::ColourFilter::createFilterTrackbar(_hsv_options);
-	}
-
-	void onDetach() override {
-		CJ_PRINT_INFO("Processing Layer Detached");
-	}
-
-	void onUpdate() override {
-		// Filter image
-		CJ::ColourFilter::filter(_images.origin, _images.filtered, _hsv_options);
-
-		// Detect Contours
-		CJ::Contours::detectContours(_images.filtered, _images.processed);
-		
-		// Draw Convex Around contours
-		CJ::Bound::drawConvexHull(_images.processed, _images.processed);
-
-		// Draw Bounding Box
-		_images.object_loc = CJ::Bound::drawBoundingBox(_images.processed, _images.processed);
-	}
-
- private:
-	CJ::Application &_app;
-	Images &_images;
-
-	// HSV Options
-	CJ::ColourFilter::HSV_Options _hsv_options;
+  private:
+    CJ::Application &_app;
+    Images &_images;
 };
 
-/**
- * Output Layer
- * Has no real purpose unless specific output methods are needed
- * I.e MJPEG Streaming
- */
+
+class BoundingLayer : public CJ::Layer {
+ public:
+  BoundingLayer(CJ::Application &app, Images &images) : Layer("Contours Layer"), _app(app), _images(images) {
+    CJ_PRINT_INFO("Bounding Layer Created");
+  }
+
+  void onAttach() override {
+    CJ_PRINT_INFO("Bounding Layer Attacked");
+    _images.boundingImage.name = "Bounding Image";
+  }
+
+  void onDetach() override {
+    CJ_PRINT_WARN("Bounding Layer Detached");
+  }
+
+  void onUpdate() override {
+    CJ::Bound::drawConvexHull(_images.contourImage, _images.boundingImage); // draw hull onto contourImg
+    object_xy = CJ::Bound::drawBoundingBox(_images.boundingImage, _images.boundingImage); // draw bounding box and get center points
+
+   // CJ_PRINT_INFO("Points (x,y): " + std::to_string(object_xy.center_x) + "," + std::to_string(object_xy.center_y));
+  }
+
+private:
+  CJ::Application &_app;
+  Images &_images;
+
+  CJ::BoundingPoints object_xy;
+};
+
+
 class OutputLayer : public CJ::Layer {
  public:
-	OutputLayer(CJ::Application &app, Images &images) : Layer("Output Layer"), _app(app), _images(images) {
-		CJ_PRINT_INFO("Output Layer Created");
-	}
+  OutputLayer(CJ::Application &app, Images &images) : Layer("Output Layer"), _app(app), _images(images) {
 
-	void onAttach() override {
-		_network = std::make_shared<Network>(Network::Type::CLIENT, Network::ConnectionType::IP_SPECIFIC);
-		_network->getSocket().setIP("10.47.88.2"); // set ip to server. I.e, roborio team 4788, roborio ip = 10.TE.AM.2
-		_network->getSocket().setPort(5801); // legal frc ports are between 5800:5810
-		_network->init();
-		CJ_PRINT_INFO("Output Layer Attached");
-	}
+  }
 
-	void onDetach() override {
-		CJ_PRINT_INFO("Output Layer Detached");
-	}
-
-	void onUpdate() override {
-		_visionValues.setDecimals(0, (float)_images.object_loc.center_x); // X value on index 0
-		_visionValues.setDecimals(1, (float)_images.object_loc.center_y); // X value on index 1
-		_visionValues.setDecimals(2, (float)_app.getDt()); // dt on index 2
-
-		_network->dpSend(_visionValues, true); // send values, don't print errors. We don't care when a value is not sent every now and then.
-
-		if (CJ::Output::display(30, _images.origin, _images.filtered, _images.processed) == 27) {
-			CJ_PRINT_WARN("Esc");
-			_app.setRunning(false);
-		}
-	}
+ 
+  void onUpdate() override {
+    CJ::Output::display(30, _images.originImage, _images.filterImage, _images.contourImage, _images.boundingImage);
+  }
 
  private:
-	CJ::Application &_app;
-	Images &_images;
-
-	std::shared_ptr<Network> _network; // UDP_TransferNT::
-	DataPacket _visionValues; // UDP_TransferNT::
+  CJ::Application &_app;
+  Images &_images;
 };
 
-
-/**
- * ValueOutput Detection Vision application
- */
-class ValueOutputDetection : public CJ::Application {
+class VisionTracking : public CJ::Application {
  public:
-	ValueOutputDetection() : CJ::Application("ValueOutput Detection") {
-		CJ_PRINT_INFO("App created");
-		pushLayer(new CaptureLayer(get(), _images.origin));
-		pushLayer(new ProcessingLayer(get(), _images));
-		pushOverlay(new OutputLayer(get(), _images));
-	}
-
-	~ValueOutputDetection() {
-		CJ_PRINT_WARN("App Destroyed");
-	}
-
+  VisionTracking() : CJ::Application("Vision App") {
+    // Layers creation
+    pushLayer(new Capture(get(), _images));
+    pushLayer(new FilterLayer(get(), _images));
+    pushLayer(new ContoursLayer(get(), _images));
+    pushLayer(new BoundingLayer(get(), _images));
+    pushLayer(new OutputLayer(get(), _images));
+  }
  private:
-
-	/**
-	 * Images shared between layers
-	 */
-	Images _images;
+  Images _images;
 };
 
-CJ_CREATE_APPLICATION(ValueOutputDetection)
+CJ_CREATE_APPLICATION(VisionTracking);
+
